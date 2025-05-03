@@ -1,6 +1,6 @@
 import argparse
 import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import pandas as pd
 import yt_dlp
@@ -13,7 +13,7 @@ def get_args() -> argparse.Namespace:
         "filepath",
         help="Path to the input JSON file (e.g. data/história pozerania.json)",
     )
-    parser.add_argument("--max_workers", type=int, default=8)
+    parser.add_argument("--max_workers", type=int, default=10)
     parser.add_argument("--output_filepath", type=str, default="data/data.pkl")
     args = parser.parse_args()
     return args
@@ -43,38 +43,39 @@ def get_df(args: argparse.Namespace) -> pd.DataFrame:
     return df
 
 
-def enrich_metadata(df: pd.DataFrame, max_workers: int):
+def fetch_info_record(args: tuple) -> tuple[int, dict]:
     opts = {"quiet": True, "skip_download": True}
-
-    def fetch_info_record(args: tuple) -> tuple[int, dict]:
-        idx, url = args
-        if not url or pd.isna(url):
+    idx, url = args
+    if not url or pd.isna(url):
+        return idx, {
+            "video_title": None,
+            "categories": None,
+            "tags": None,
+            "description": None,
+        }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+        if info is None:
             return idx, {
                 "video_title": None,
                 "categories": None,
                 "tags": None,
                 "description": None,
             }
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            if info is None:
-                return idx, {
-                    "video_title": None,
-                    "categories": None,
-                    "tags": None,
-                    "description": None,
-                }
-        return idx, {
-            "video_title": info.get("title"),
-            "categories": info.get("categories"),
-            "tags": info.get("tags"),
-            "description": info.get("description"),
-        }
+    return idx, {
+        "video_title": info.get("title"),
+        "categories": info.get("categories"),
+        "tags": info.get("tags"),
+        "description": info.get("description"),
+    }
 
+
+def enrich_metadata(df: pd.DataFrame, max_workers: int) -> pd.DataFrame:
     tasks = [(idx, url) for idx, url in df["titleUrl"].dropna().items()]
     results = []
+    failed_idxs = []
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(fetch_info_record, t): t[0] for t in tasks}
         for future in tqdm(
             as_completed(futures), total=len(futures), desc="Enriching video metadata"
@@ -83,6 +84,7 @@ def enrich_metadata(df: pd.DataFrame, max_workers: int):
                 idx, record = future.result()
             except Exception as e:
                 idx = futures[future]
+                failed_idxs.append(idx)
                 print(f"[FATAL] Unexpected error for idx={idx}: {e}")
                 record: dict = {
                     "video_title": None,
@@ -97,6 +99,13 @@ def enrich_metadata(df: pd.DataFrame, max_workers: int):
     info_df = info_df.astype("object")
 
     df = df.join(info_df)
+
+    n_fail = len(failed_idxs)
+    if n_fail:
+        print(f"Completed with {n_fail} failures.")
+        with open("data/failed_idxs.json", "w") as f:
+            json.dump(failed_idxs, f)
+        print("Saved failed idxs to failed_idxs.json")
 
     return df
 
