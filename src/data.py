@@ -12,7 +12,7 @@ def get_args() -> argparse.Namespace:
         "filepath",
         help="Path to the input JSON file (e.g. data/história pozerania.json)",
     )
-    parser.add_argument("max_workers", type=int, default=8)
+    parser.add_argument("--max_workers", type=int, default=8)
     args = parser.parse_args()
     return args
 
@@ -42,7 +42,7 @@ def get_df(args: argparse.Namespace) -> pd.DataFrame:
 
 
 def enrich_metadata(df: pd.DataFrame, max_workers: int):
-    df = df.head(100)
+    df = df.head(3)
 
     opts = {"quiet": True, "skip_download": True}
 
@@ -77,7 +77,17 @@ def enrich_metadata(df: pd.DataFrame, max_workers: int):
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(fetch_info_record, t): t[0] for t in tasks}
         for future in as_completed(futures):
-            idx, record = future.result()
+            try:
+                idx, record = future.result()
+            except Exception as e:
+                idx = futures[future]
+                print(f"[FATAL] Unexpected error for idx={idx}: {e}")
+                record: dict = {
+                    "video_title": None,
+                    "categories": None,
+                    "tags": None,
+                    "description": None,
+                }
             record["idx"] = idx
             results.append(record)
 
