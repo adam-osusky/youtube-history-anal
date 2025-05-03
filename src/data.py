@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 import yt_dlp
+from tqdm.auto import tqdm
 
 
 def get_args() -> argparse.Namespace:
@@ -76,7 +77,9 @@ def enrich_metadata(df: pd.DataFrame, max_workers: int):
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(fetch_info_record, t): t[0] for t in tasks}
-        for future in as_completed(futures):
+        for future in tqdm(
+            as_completed(futures), total=len(futures), desc="Enriching video metadata"
+        ):
             try:
                 idx, record = future.result()
             except Exception as e:
