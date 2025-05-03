@@ -14,6 +14,7 @@ def get_args() -> argparse.Namespace:
         help="Path to the input JSON file (e.g. data/história pozerania.json)",
     )
     parser.add_argument("--max_workers", type=int, default=8)
+    parser.add_argument("--output_filepath", type=str, default="data/data.pkl")
     args = parser.parse_args()
     return args
 
@@ -108,3 +109,5 @@ if __name__ == "__main__":
 
     df = get_df(args)
     df = enrich_metadata(df, max_workers)
+
+    df.to_pickle(args.output_filepath)
