@@ -44,8 +44,6 @@ def get_df(args: argparse.Namespace) -> pd.DataFrame:
 
 
 def enrich_metadata(df: pd.DataFrame, max_workers: int):
-    df = df.head(3)
-
     opts = {"quiet": True, "skip_download": True}
 
     def fetch_info_record(args: tuple) -> tuple[int, dict]:
