@@ -1,10 +1,18 @@
 import argparse
 import json
+import logging
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import pandas as pd
 import yt_dlp
 from tqdm.auto import tqdm
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 def get_args() -> argparse.Namespace:
@@ -22,7 +30,7 @@ def get_args() -> argparse.Namespace:
 def get_df(args: argparse.Namespace) -> pd.DataFrame:
     with open(args.filepath, "r") as f:
         data = json.load(f)
-    print(f"{len(data)=}")
+    logger.info("Loaded %d records from %s", len(data), args.filepath)
 
     df = pd.json_normalize(data, errors="ignore")
     df["time"] = pd.to_datetime(
@@ -34,11 +42,8 @@ def get_df(args: argparse.Namespace) -> pd.DataFrame:
     df = df[df["details"].isna()]
     df.pop("details")
 
-    df.pop("products")
-    df.pop("header")
-    df.pop("activityControls")
-    df.pop("subtitles")
-    df.pop("description")
+    for col in ["products", "header", "activityControls", "subtitles", "description"]:
+        df.pop(col)
 
     return df
 
@@ -85,7 +90,7 @@ def enrich_metadata(df: pd.DataFrame, max_workers: int) -> pd.DataFrame:
             except Exception as e:
                 idx = futures[future]
                 failed_idxs.append(idx)
-                print(f"[FATAL] Unexpected error for idx={idx}: {e}")
+                logger.exception(f"Unexpected error for idx={idx}: {e}")
                 record: dict = {
                     "video_title": None,
                     "categories": None,
@@ -102,10 +107,11 @@ def enrich_metadata(df: pd.DataFrame, max_workers: int) -> pd.DataFrame:
 
     n_fail = len(failed_idxs)
     if n_fail:
-        print(f"Completed with {n_fail} failures.")
-        with open("data/failed_idxs.json", "w") as f:
+        logger.warning(f"Completed with {n_fail} failures.")
+        failed_path = "data/failed_idxs.json"
+        with open(failed_path, "w") as f:
             json.dump(failed_idxs, f)
-        print("Saved failed idxs to failed_idxs.json")
+        logger.info(f"Saved failed idxs to {failed_path}")
 
     return df
 
@@ -118,3 +124,4 @@ if __name__ == "__main__":
     df = enrich_metadata(df, max_workers)
 
     df.to_pickle(args.output_filepath)
+    logger.info(f"Dataframe saved to {args.output_filepath}")
