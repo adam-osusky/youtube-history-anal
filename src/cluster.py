@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -47,7 +48,7 @@ def get_args() -> argparse.Namespace:
         metavar=("START", "END", "STEP"),
         help="Sweep k from START to END-1 in increments of STEP "
         "(e.g. 5 35 5 → 5,10,…,30).",
-        default=[150, 400, 25],
+        default=[10, 300, 10],
     )
     parser.add_argument(
         "--n-clusters",
@@ -60,11 +61,11 @@ def get_args() -> argparse.Namespace:
     )
 
     # Vectoriser knobs
-    parser.add_argument("--max-title-features", type=int, default=15_000)
+    parser.add_argument("--max-title-features", type=int, default=1_000)
     parser.add_argument("--max-title-ngram", type=int, default=1)
-    parser.add_argument("--max-desc-features", type=int, default=40_000)
+    parser.add_argument("--max-desc-features", type=int, default=1_000)
     parser.add_argument("--max-desc-ngram", type=int, default=1)
-    parser.add_argument("--max-tag-features", type=int, default=20_000)
+    parser.add_argument("--max-tag-features", type=int, default=1_000)
     parser.add_argument("--min-df-tag", type=int, default=5)
 
     return parser.parse_args()
@@ -132,13 +133,18 @@ def make_clusters(args: argparse.Namespace) -> pd.DataFrame:
     best_k, best_sil, best_labels = None, -1, None
 
     for k in k_values:
+        start_time = time.perf_counter()
+
         km = KMeans(
             n_clusters=k,
             random_state=args.random_state,
-            #  batch_size=1000
         )
         labels = km.fit_predict(X)
         sil = silhouette_score(X, labels, metric="cosine")
+
+        minutes, seconds = divmod(time.perf_counter() - start_time, 60)
+        logger.info(f"Fitting time: {int(minutes)}m {seconds:.2f}s")
+
         recon_errors.append(km.inertia_)
         sil_scores.append(sil)
         logger.info(f"k={k:<3d} sil={sil:.4f}  recon_error={km.inertia_:,.0f}")
