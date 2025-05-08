@@ -7,6 +7,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import pandas as pd
+from joblib import Parallel, delayed
 from numpy import ndarray
 from scipy.sparse import spmatrix
 from sklearn.cluster import KMeans
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 def get_args() -> argparse.Namespace:
     """Parse and return command-line arguments."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", type=str, default="2")
+    parser.add_argument("--version", type=str, default="3")
     parser.add_argument(
         "--input",
         "-i",
@@ -38,26 +39,32 @@ def get_args() -> argparse.Namespace:
         "-o",
         type=Path,
         default=None,
-        help="Path to save CSV with cluster labels. "
-        "(If omitted, results are not written.)",
+        help="Path to save CSV with cluster labels. (If omitted, results are not written.)",
     )
     parser.add_argument(
         "--k-range",
         nargs=3,
         type=int,
         metavar=("START", "END", "STEP"),
-        help="Sweep k from START to END-1 in increments of STEP "
-        "(e.g. 5 35 5 → 5,10,…,30).",
+        help="Sweep k from START to END-1 in increments of STEP (e.g. 5 35 5 → 5,10,…,30).",
         default=[10, 300, 10],
     )
     parser.add_argument(
         "--n-clusters",
         type=int,
-        default=12,
+        default=None,
         help="k for one-shot clustering when --k-range not supplied.",
     )
     parser.add_argument(
         "--random-state", type=int, default=69, help="Random seed for reproducibility."
+    )
+
+    # Parallelism knob
+    parser.add_argument(
+        "--n-jobs",
+        type=int,
+        default=4,
+        help="Number of parallel processes for the k sweep (default -1 = all cores).",
     )
 
     # Vectoriser knobs
@@ -106,10 +113,39 @@ def build_feature_matrix(
     return X, features
 
 
+def _init_worker(logfile: str | None = None) -> None:
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        root.removeHandler(h)
+    handler = (
+        logging.StreamHandler() if logfile is None else logging.FileHandler(logfile)
+    )
+    fmt = "%(asctime)s [%(processName)s] %(levelname)s %(message)s"
+    handler.setFormatter(logging.Formatter(fmt))
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+
+
+def _cluster_for_k(k: int, X, random_state: int):
+    """Helper to fit KMeans and compute silhouette in a subprocess. Logs timing."""
+    start_t = time.perf_counter()
+
+    km = KMeans(n_clusters=k, random_state=random_state)
+    labels = km.fit_predict(X)
+    sil = silhouette_score(X, labels, metric="cosine")
+
+    fit_seconds = time.perf_counter() - start_t
+    minutes, seconds = divmod(fit_seconds, 60)
+    logging.info(
+        f"k={k:<3d}; sil={sil:.4f}; recon_error={km.inertia_:,.0f}; fitted in {int(minutes)}m {seconds:.2f}s"
+    )
+
+    return k, sil, km.inertia_, labels, fit_seconds
+
+
 def make_clusters(args: argparse.Namespace) -> pd.DataFrame:
     """Load data, build feature pipeline, fit clustering model, return DataFrame."""
     df: pd.DataFrame = pd.read_pickle(args.input)
-    # df = df.head(60)
 
     # Text columns
     df["video_title"] = df["video_title"].fillna("")
@@ -128,26 +164,27 @@ def make_clusters(args: argparse.Namespace) -> pd.DataFrame:
     X, _ = build_feature_matrix(df, args)
     logger.info(f"Created feature vectors with shape={X.shape}")
 
-    k_values = range(*args.k_range) if args.k_range else [args.n_clusters]
+    k_values = list(range(*args.k_range)) if args.k_range else [args.n_clusters]
+
+    # Run the sweep in parallel
+    results = Parallel(
+        n_jobs=args.n_jobs,
+        prefer="processes",
+        verbose=5,
+        initializer=_init_worker,
+        initargs=(None,),
+    )(delayed(_cluster_for_k)(k, X, args.random_state) for k in k_values)
+
+    # Sort results by k to keep plots tidy
+    results = list(results)
+    results.sort(key=lambda x: x[0])
+
     sil_scores, recon_errors = [], []
     best_k, best_sil, best_labels = None, -1, None
 
-    for k in k_values:
-        start_time = time.perf_counter()
-
-        km = KMeans(
-            n_clusters=k,
-            random_state=args.random_state,
-        )
-        labels = km.fit_predict(X)
-        sil = silhouette_score(X, labels, metric="cosine")
-
-        minutes, seconds = divmod(time.perf_counter() - start_time, 60)
-        logger.info(f"Fitting time: {int(minutes)}m {seconds:.2f}s")
-
-        recon_errors.append(km.inertia_)
+    for k, sil, inertia, labels, _ in results:
         sil_scores.append(sil)
-        logger.info(f"k={k:<3d} sil={sil:.4f}  recon_error={km.inertia_:,.0f}")
+        recon_errors.append(inertia)
         if sil > best_sil:
             best_k, best_sil, best_labels = k, sil, labels
 
@@ -156,10 +193,10 @@ def make_clusters(args: argparse.Namespace) -> pd.DataFrame:
     out_dir_ts.mkdir(parents=True, exist_ok=True)
 
     if args.k_range:
-        plot_path = out_dir_ts / f"{timestamp}_silhoutte.png"
+        plot_path = out_dir_ts / f"{timestamp}_silhouette.png"
 
         plt.figure()
-        plt.plot(list(k_values), sil_scores, marker="o")
+        plt.plot(k_values, sil_scores, marker="o")
         plt.xlabel("k (number of clusters)")
         plt.ylabel("Silhouette score (cosine distance)")
         plt.title("Silhouette vs. k")
@@ -170,7 +207,7 @@ def make_clusters(args: argparse.Namespace) -> pd.DataFrame:
 
         recon_path = out_dir_ts / f"{timestamp}_recon.png"
         plt.figure()
-        plt.plot(list(k_values), recon_errors, marker="o")
+        plt.plot(k_values, recon_errors, marker="o")
         plt.xlabel("k")
         plt.ylabel("Reconstruction error (inertia)")
         plt.title("Reconstruction error vs. k")
