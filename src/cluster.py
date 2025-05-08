@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 def get_args() -> argparse.Namespace:
     """Parse and return command-line arguments."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", type=str, default="1")
+    parser.add_argument("--version", type=str, default="2")
     parser.add_argument(
         "--input",
         "-i",
@@ -94,7 +94,7 @@ def build_feature_matrix(
 
     features = ColumnTransformer(
         [
-            ("title", title_tf, "title"),
+            ("video_title", title_tf, "video_title"),
             ("desc", desc_tf, "description"),
             ("tags", tags_tf, "tags_str"),
             ("cat", cat_ohe, ["category"]),
@@ -112,7 +112,7 @@ def make_clusters(args: argparse.Namespace) -> pd.DataFrame:
     # df = df.head(60)
 
     # Text columns
-    df["title"] = df["title"].fillna("")
+    df["video_title"] = df["video_title"].fillna("")
     df["description"] = df["description"].fillna("")
 
     # tags: convert list → space‑separated string
