@@ -7,7 +7,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import pandas as pd
-from joblib import Parallel, delayed
+from joblib import Parallel, delayed, dump
 from numpy import ndarray
 from scipy.sparse import spmatrix
 from sklearn.cluster import KMeans
@@ -38,7 +38,7 @@ def get_args() -> argparse.Namespace:
         "--output",
         "-o",
         type=Path,
-        default=None,
+        default="data/data_clusters.pkl",
         help="Path to save CSV with cluster labels. (If omitted, results are not written.)",
     )
     parser.add_argument(
@@ -47,12 +47,13 @@ def get_args() -> argparse.Namespace:
         type=int,
         metavar=("START", "END", "STEP"),
         help="Sweep k from START to END-1 in increments of STEP (e.g. 5 35 5 → 5,10,…,30).",
-        default=[300, 1000, 25],
+        # default=[100, 1001, 100],
+        default=None,
     )
     parser.add_argument(
         "--n-clusters",
         type=int,
-        default=None,
+        default=1000,
         help="k for one-shot clustering when --k-range not supplied.",
     )
     parser.add_argument(
@@ -68,10 +69,10 @@ def get_args() -> argparse.Namespace:
     )
 
     # Vectoriser knobs
-    parser.add_argument("--max-title-features", type=int, default=1_000)
+    parser.add_argument("--max-title-features", type=int, default=10_000)
     parser.add_argument("--min-title-df", type=int, default=10)
     parser.add_argument("--max-title-ngram", type=int, default=1)
-    parser.add_argument("--max-desc-features", type=int, default=1_000)
+    parser.add_argument("--max-desc-features", type=int, default=3_000)
     parser.add_argument("--min-desc-df", type=int, default=10)
     parser.add_argument("--max-desc-ngram", type=int, default=1)
     parser.add_argument("--max-tag-features", type=int, default=1_000)
@@ -82,8 +83,7 @@ def get_args() -> argparse.Namespace:
         "-f",
         nargs="+",
         choices=["video_title", "desc", "tags", "cat"],
-        # default=["video_title", "desc", "tags", "cat"],
-        default=["video_title"],
+        default=["video_title", "desc", "tags", "cat"],
         help="Which features to include in the ColumnTransformer. "
         "Options: video_title, desc, tags, cat.",
     )
@@ -162,10 +162,12 @@ def _cluster_for_k(k: int, X, random_state: int):
         f"k={k:<3d}; sil={sil:.4f}; recon_error={km.inertia_:,.0f}; fitted in {int(minutes)}m {seconds:.2f}s"
     )
 
-    return k, sil, km.inertia_, labels, fit_seconds
+    return k, sil, km.inertia_, labels, fit_seconds, km
 
 
-def make_clusters(args: argparse.Namespace) -> pd.DataFrame:
+def make_clusters(
+    args: argparse.Namespace,
+) -> tuple[pd.DataFrame, KMeans, ColumnTransformer]:
     """Load data, build feature pipeline, fit clustering model, return DataFrame."""
     df: pd.DataFrame = pd.read_pickle(args.input)
 
@@ -183,7 +185,7 @@ def make_clusters(args: argparse.Namespace) -> pd.DataFrame:
         lambda lst: lst[0] if isinstance(lst, list) and lst else "Unknown"
     )
 
-    X, _ = build_feature_matrix(df, args)
+    X, features = build_feature_matrix(df, args)
     logger.info(f"Created feature vectors with shape={X.shape}")
 
     k_values = list(range(*args.k_range)) if args.k_range else [args.n_clusters]
@@ -202,13 +204,13 @@ def make_clusters(args: argparse.Namespace) -> pd.DataFrame:
     results.sort(key=lambda x: x[0])
 
     sil_scores, recon_errors = [], []
-    best_k, best_sil, best_labels = None, -1, None
+    best_k, best_sil, best_labels, best_km = None, -1, None, None
 
-    for k, sil, inertia, labels, _ in results:
+    for k, sil, inertia, labels, _, km in results:
         sil_scores.append(sil)
         recon_errors.append(inertia)
         if sil > best_sil:
-            best_k, best_sil, best_labels = k, sil, labels
+            best_k, best_sil, best_labels, best_km = k, sil, labels, km
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir_ts = Path("data/experiments") / timestamp
@@ -248,10 +250,13 @@ def make_clusters(args: argparse.Namespace) -> pd.DataFrame:
 
     df["cluster"] = best_labels
     if args.output:
-        df.to_csv(args.output, index=False)
+        df.to_pickle(args.output)
         logger.info(f"Clustered data (best k={best_k}) written to → {args.output}")
+        dump(features, out_dir_ts / "features.joblib")
+        dump(best_km, out_dir_ts / "kmeans.joblib")
+        logger.info(f"best_km and features written to → {out_dir_ts}")
 
-    return df
+    return df, best_km, features  # type: ignore
 
 
 if __name__ == "__main__":
