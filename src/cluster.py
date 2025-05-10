@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 def get_args() -> argparse.Namespace:
     """Parse and return command-line arguments."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", type=str, default="4")
+    parser.add_argument("--version", type=str, default="5")
     parser.add_argument(
         "--input",
         "-i",
@@ -47,7 +47,7 @@ def get_args() -> argparse.Namespace:
         type=int,
         metavar=("START", "END", "STEP"),
         help="Sweep k from START to END-1 in increments of STEP (e.g. 5 35 5 → 5,10,…,30).",
-        default=[1, 31, 1],
+        default=[300, 1000, 25],
     )
     parser.add_argument(
         "--n-clusters",
@@ -77,6 +77,17 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--max-tag-features", type=int, default=1_000)
     parser.add_argument("--min-df-tag", type=int, default=10)
 
+    parser.add_argument(
+        "--features",
+        "-f",
+        nargs="+",
+        choices=["video_title", "desc", "tags", "cat"],
+        # default=["video_title", "desc", "tags", "cat"],
+        default=["video_title"],
+        help="Which features to include in the ColumnTransformer. "
+        "Options: video_title, desc, tags, cat.",
+    )
+
     return parser.parse_args()
 
 
@@ -103,15 +114,21 @@ def build_feature_matrix(
     )
     cat_ohe = OneHotEncoder(handle_unknown="ignore")
 
-    features = ColumnTransformer(
-        [
-            ("video_title", title_tf, "video_title"),
-            ("desc", desc_tf, "description"),
-            ("tags", tags_tf, "tags_str"),
-            ("cat", cat_ohe, ["category"]),
-        ],
-        sparse_threshold=0.3,
-    )
+    all_features = [
+        ("video_title", title_tf, "video_title"),
+        ("desc", desc_tf, "description"),
+        ("tags", tags_tf, "tags_str"),
+        ("cat", cat_ohe, ["category"]),
+    ]
+    # filter by what the user asked for
+    selected = [feat for feat in all_features if feat[0] in args.features]
+    if not selected:
+        raise ValueError(
+            "No features selected! Please choose at least one of: "
+            "video_title, desc, tags, cat."
+        )
+
+    features = ColumnTransformer(selected, sparse_threshold=0.3)
 
     X = features.fit_transform(df)
     X = normalize(X, norm="l2", axis=1, copy=False)
