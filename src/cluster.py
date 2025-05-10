@@ -3,6 +3,7 @@ import json
 import logging
 import textwrap
 import time
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from scipy import sparse
 from scipy.sparse import spmatrix
 from sklearn.cluster import KMeans
 from sklearn.compose import ColumnTransformer
+from sklearn.decomposition import PCA
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import OneHotEncoder, normalize
@@ -294,6 +296,44 @@ def make_clusters(
         dump(best_km, out_dir_ts / "kmeans.joblib")
         logger.info(f"best_km and features written to → {out_dir_ts}")
 
+        if hasattr(X, "toarray"):
+            X = X.toarray()
+        else:
+            X = np.asarray(X)
+
+        cluster_sizes = Counter(labels)
+        top_clusters = [cid for cid, _ in cluster_sizes.most_common(50)]
+        mask = np.isin(labels, top_clusters)
+        X = X[mask]
+        labels = labels[mask]
+
+        pca = PCA(n_components=2, random_state=0)
+        coords = pca.fit_transform(X)
+
+        plt.figure(figsize=(8, 6))
+        cmap = plt.get_cmap("nipy_spectral", len(top_clusters))
+
+        sc = plt.scatter(
+            coords[:, 0],
+            coords[:, 1],
+            c=[top_clusters.index(l) for l in labels],
+            cmap=cmap,
+            s=5,
+        )
+        plt.xlabel("PC1")
+        plt.ylabel("PC2")
+        plt.title("PCA projection of clusters")
+
+        cbar = plt.colorbar(
+            sc, ticks=range(len(top_clusters)), fraction=0.046, pad=0.04
+        )
+        cbar.ax.set_yticklabels(top_clusters)
+        cbar.set_label("Cluster ID", rotation=270, labelpad=15)
+
+        pca_path = out_dir_ts / "pca.png"
+        plt.savefig(pca_path)
+        logger.info(f"saved PCA plot → {pca_path}")
+
     return df, best_km, features  # type: ignore
 
 
@@ -308,18 +348,26 @@ def write_cluster_report(
     feature_names = features.get_feature_names_out()
     centroids = km.cluster_centers_
 
+    # Compute sizes for all clusters (including empty ones)
+    size_series = df["cluster"].value_counts().to_dict()
+    n_clusters = centroids.shape[0]
+    cluster_ids = list(range(n_clusters))
+    # Sort clusters by size descending
+    cluster_ids.sort(key=lambda x: size_series.get(x, 0), reverse=True)
+
     with open(output_path, "w", encoding="utf-8") as f:
         f.write("Cluster Analysis Report\n")
         f.write("=" * 80 + "\n\n")
 
-        for i, centroid in enumerate(centroids):
+        for i in cluster_ids:
             members = df[df["cluster"] == i]
             n_members = len(members)
 
-            f.write(f"Cluster {i} ({n_members} items)")
-            f.write("\n" + "-" * (len(f"Cluster {i} ({n_members} items)")) + "\n")
+            header = f"Cluster {i} ({n_members} items)"
+            f.write(header + "\n")
+            f.write("-" * len(header) + "\n")
 
-            top_idx = centroid.argsort()[::-1][:10]
+            top_idx = centroids[i].argsort()[::-1][:10]
             top_terms = feature_names[top_idx]
             f.write("Top Terms:\n")
             f.write("  " + ", ".join(top_terms) + "\n\n")
@@ -331,9 +379,13 @@ def write_cluster_report(
                 samples = members[["video_title", "description", "tags_str"]].sample(
                     min(sample_size, n_members), random_state=42
                 )
-                for idx, row in samples.iterrows():
+                for _, row in samples.iterrows():
                     title = row.video_title.strip() or "[No title]"
-                    desc = row.description.strip()[:100] or "[No description]"
+                    desc = (
+                        (row.description.strip()[:100] + "...")
+                        if len(row.description.strip()) > 100
+                        else (row.description.strip() or "[No description]")
+                    )
                     tags = row.tags_str.strip()[:30] or "[No tags]"
 
                     wrapped_title = textwrap.fill(title, wrap_width)
