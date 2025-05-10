@@ -1,22 +1,23 @@
 import argparse
 import json
 import logging
+import textwrap
 import time
 from datetime import datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed, dump
 from numpy import ndarray
+from scipy import sparse
 from scipy.sparse import spmatrix
 from sklearn.cluster import KMeans
 from sklearn.compose import ColumnTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import OneHotEncoder, normalize
-import numpy as np
-from scipy import sparse
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,14 +34,14 @@ def get_args() -> argparse.Namespace:
         "--input",
         "-i",
         type=Path,
-        required=True,
+        default="data/data.pkl",
         help="Path to input pickle file from `data.py`.",
     )
     parser.add_argument(
         "--output",
         "-o",
         type=Path,
-        # default="data/data_clusters.pkl",
+        default="data/data_clusters.pkl",
         help="Path to save CSV with cluster labels. (If omitted, results are not written.)",
     )
     parser.add_argument(
@@ -93,13 +94,14 @@ def get_args() -> argparse.Namespace:
 
     return parser.parse_args()
 
+
 def drop_zero_rows(X: ndarray | spmatrix) -> ndarray | spmatrix:
     if sparse.issparse(X):
         # getnnz(axis=1) counts nonzero entries in each row
-        nonzero_mask = X.getnnz(axis=1) != 0    # True for rows we want to keep
+        nonzero_mask = X.getnnz(axis=1) != 0  # True for rows we want to keep
         # either boolean‐index or fancy‐index the rows:
         try:
-            return X[nonzero_mask]               # CSR supports boolean mask on rows
+            return X[nonzero_mask]  # CSR supports boolean mask on rows
         except (TypeError, IndexError):
             # fallback to integer indexing
             keep_idx = np.nonzero(nonzero_mask)[0]
@@ -293,6 +295,58 @@ def make_clusters(
         logger.info(f"best_km and features written to → {out_dir_ts}")
 
     return df, best_km, features  # type: ignore
+
+
+def write_cluster_report(
+    df: pd.DataFrame,
+    features: ColumnTransformer,
+    km: KMeans,
+    output_path: str,
+    sample_size: int = 5,
+    wrap_width: int = 80,
+) -> None:
+    feature_names = features.get_feature_names_out()
+    centroids = km.cluster_centers_
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("Cluster Analysis Report\n")
+        f.write("=" * 80 + "\n\n")
+
+        for i, centroid in enumerate(centroids):
+            members = df[df["cluster"] == i]
+            n_members = len(members)
+
+            f.write(f"Cluster {i} ({n_members} items)")
+            f.write("\n" + "-" * (len(f"Cluster {i} ({n_members} items)")) + "\n")
+
+            top_idx = centroid.argsort()[::-1][:10]
+            top_terms = feature_names[top_idx]
+            f.write("Top Terms:\n")
+            f.write("  " + ", ".join(top_terms) + "\n\n")
+
+            f.write("Examples:\n")
+            if n_members == 0:
+                f.write("  (No members in this cluster)\n\n")
+            else:
+                samples = members[["video_title", "description", "tags_str"]].sample(
+                    min(sample_size, n_members), random_state=42
+                )
+                for idx, row in samples.iterrows():
+                    title = row.video_title.strip() or "[No title]"
+                    desc = row.description.strip()[:100] or "[No description]"
+                    tags = row.tags_str.strip()[:30] or "[No tags]"
+
+                    wrapped_title = textwrap.fill(title, wrap_width)
+                    wrapped_desc = textwrap.fill(desc, wrap_width)
+                    wrapped_tags = textwrap.fill(tags, wrap_width)
+
+                    f.write(f"  • Title: {wrapped_title}\n")
+                    f.write(f"    Description: {wrapped_desc}\n")
+                    f.write(f"    Tags: {wrapped_tags}\n\n")
+
+            f.write("=" * 80 + "\n\n")
+
+    logger.info(f"✔ Cluster report saved to: {output_path}")
 
 
 if __name__ == "__main__":
