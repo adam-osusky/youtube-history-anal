@@ -14,7 +14,7 @@ from sklearn.cluster import KMeans
 from sklearn.compose import ColumnTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import silhouette_score
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, normalize
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 def get_args() -> argparse.Namespace:
     """Parse and return command-line arguments."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", type=str, default="3")
+    parser.add_argument("--version", type=str, default="4")
     parser.add_argument(
         "--input",
         "-i",
@@ -47,7 +47,7 @@ def get_args() -> argparse.Namespace:
         type=int,
         metavar=("START", "END", "STEP"),
         help="Sweep k from START to END-1 in increments of STEP (e.g. 5 35 5 → 5,10,…,30).",
-        default=[10, 300, 10],
+        default=[1, 31, 1],
     )
     parser.add_argument(
         "--n-clusters",
@@ -63,17 +63,19 @@ def get_args() -> argparse.Namespace:
     parser.add_argument(
         "--n-jobs",
         type=int,
-        default=4,
+        default=6,
         help="Number of parallel processes for the k sweep (default -1 = all cores).",
     )
 
     # Vectoriser knobs
     parser.add_argument("--max-title-features", type=int, default=1_000)
+    parser.add_argument("--min-title-df", type=int, default=10)
     parser.add_argument("--max-title-ngram", type=int, default=1)
     parser.add_argument("--max-desc-features", type=int, default=1_000)
+    parser.add_argument("--min-desc-df", type=int, default=10)
     parser.add_argument("--max-desc-ngram", type=int, default=1)
     parser.add_argument("--max-tag-features", type=int, default=1_000)
-    parser.add_argument("--min-df-tag", type=int, default=5)
+    parser.add_argument("--min-df-tag", type=int, default=10)
 
     return parser.parse_args()
 
@@ -86,11 +88,13 @@ def build_feature_matrix(
         max_features=args.max_title_features,
         ngram_range=(1, args.max_title_ngram),
         stop_words="english",
+        min_df=args.min_title_df,
     )
     desc_tf = TfidfVectorizer(
         max_features=args.max_desc_features,
         ngram_range=(1, args.max_desc_ngram),
         stop_words="english",
+        min_df=args.min_desc_df,
     )
     tags_tf = TfidfVectorizer(
         max_features=args.max_tag_features,
@@ -110,7 +114,8 @@ def build_feature_matrix(
     )
 
     X = features.fit_transform(df)
-    return X, features
+    X = normalize(X, norm="l2", axis=1, copy=False)
+    return X, features  # type: ignore
 
 
 def _init_worker(logfile: str | None = None) -> None:
