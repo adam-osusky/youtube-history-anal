@@ -15,6 +15,8 @@ from sklearn.compose import ColumnTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import OneHotEncoder, normalize
+import numpy as np
+from scipy import sparse
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,7 +28,7 @@ logger = logging.getLogger(__name__)
 def get_args() -> argparse.Namespace:
     """Parse and return command-line arguments."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", type=str, default="6")
+    parser.add_argument("--version", type=str, default="7")
     parser.add_argument(
         "--input",
         "-i",
@@ -38,7 +40,7 @@ def get_args() -> argparse.Namespace:
         "--output",
         "-o",
         type=Path,
-        default="data/data_clusters.pkl",
+        # default="data/data_clusters.pkl",
         help="Path to save CSV with cluster labels. (If omitted, results are not written.)",
     )
     parser.add_argument(
@@ -52,7 +54,7 @@ def get_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--n-clusters",
-        type=int,
+        # type=int,
         default=1000,
         help="k for one-shot clustering when --k-range not supplied.",
     )
@@ -70,13 +72,14 @@ def get_args() -> argparse.Namespace:
 
     # Vectoriser knobs
     parser.add_argument("--max-title-features", type=int, default=10_000)
-    parser.add_argument("--min-title-df", type=int, default=10)
-    parser.add_argument("--max-title-ngram", type=int, default=1)
+    parser.add_argument("--min-title-df", type=int, default=100)
+    parser.add_argument("--max-title-ngram", type=int, default=3)
     parser.add_argument("--max-desc-features", type=int, default=3_000)
-    parser.add_argument("--min-desc-df", type=int, default=10)
-    parser.add_argument("--max-desc-ngram", type=int, default=1)
+    parser.add_argument("--min-desc-df", type=int, default=100)
+    parser.add_argument("--max-desc-df", type=int, default=0.5)
+    parser.add_argument("--max-desc-ngram", type=int, default=3)
     parser.add_argument("--max-tag-features", type=int, default=1_000)
-    parser.add_argument("--min-df-tag", type=int, default=10)
+    parser.add_argument("--min-df-tag", type=int, default=100)
 
     parser.add_argument(
         "--features",
@@ -89,6 +92,24 @@ def get_args() -> argparse.Namespace:
     )
 
     return parser.parse_args()
+
+def drop_zero_rows(X: ndarray | spmatrix) -> ndarray | spmatrix:
+    if sparse.issparse(X):
+        # getnnz(axis=1) counts nonzero entries in each row
+        nonzero_mask = X.getnnz(axis=1) != 0    # True for rows we want to keep
+        # either boolean‐index or fancy‐index the rows:
+        try:
+            return X[nonzero_mask]               # CSR supports boolean mask on rows
+        except (TypeError, IndexError):
+            # fallback to integer indexing
+            keep_idx = np.nonzero(nonzero_mask)[0]
+            return X[keep_idx]
+    else:
+        # ensure it’s an array
+        X = np.asarray(X)
+        # any nonzero in the row → keep
+        nonzero_mask = np.any(X != 0, axis=1)
+        return X[nonzero_mask]
 
 
 def build_feature_matrix(
@@ -106,6 +127,7 @@ def build_feature_matrix(
         ngram_range=(1, args.max_desc_ngram),
         stop_words="english",
         min_df=args.min_desc_df,
+        max_df=args.max_desc_df,
     )
     tags_tf = TfidfVectorizer(
         max_features=args.max_tag_features,
@@ -187,6 +209,20 @@ def make_clusters(
 
     X, features = build_feature_matrix(df, args)
     logger.info(f"Created feature vectors with shape={X.shape}")
+    if sparse.issparse(X):
+        zero_count = int((X.getnnz(axis=1) == 0).sum())
+    else:
+        X = np.asarray(X)
+        zero_count = int(np.all(X == 0, axis=1).sum())
+    logger.info(f"Number of zero feature vectors: {zero_count}")
+
+    # X = drop_zero_rows(X)
+    # if sparse.issparse(X):
+    #     zero_count = int((X.getnnz(axis=1) == 0).sum())
+    # else:
+    #     X = np.asarray(X)
+    #     zero_count = int(np.all(X == 0, axis=1).sum())
+    # logger.info(f"Number of zero feature vectors: {zero_count}")
 
     k_values = list(range(*args.k_range)) if args.k_range else [args.n_clusters]
 
