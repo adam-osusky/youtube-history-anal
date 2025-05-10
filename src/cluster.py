@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 def get_args() -> argparse.Namespace:
     """Parse and return command-line arguments."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", type=str, default="5")
+    parser.add_argument("--version", type=str, default="6")
     parser.add_argument(
         "--input",
         "-i",
@@ -172,7 +172,7 @@ def make_clusters(
     df: pd.DataFrame = pd.read_pickle(args.input)
 
     # Text columns
-    df["video_title"] = df["video_title"].fillna("")
+    df = df[df["video_title"].notna() & (df["video_title"].str.strip() != "")]
     df["description"] = df["description"].fillna("")
 
     # tags: convert list → space‑separated string
