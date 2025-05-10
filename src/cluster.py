@@ -89,7 +89,7 @@ def get_args() -> argparse.Namespace:
         "-f",
         nargs="+",
         choices=["video_title", "desc", "tags", "cat"],
-        default=["video_title", "desc", "tags", "cat"],
+        default=["video_title"],
         help="Which features to include in the ColumnTransformer. "
         "Options: video_title, desc, tags, cat.",
     )
@@ -114,6 +114,70 @@ def drop_zero_rows(X: ndarray | spmatrix) -> ndarray | spmatrix:
         # any nonzero in the row → keep
         nonzero_mask = np.any(X != 0, axis=1)
         return X[nonzero_mask]
+
+
+def write_cluster_report(
+    df: pd.DataFrame,
+    features: ColumnTransformer,
+    km: KMeans,
+    output_path: str,
+    sample_size: int = 5,
+    wrap_width: int = 80,
+) -> None:
+    feature_names = features.get_feature_names_out()
+    centroids = km.cluster_centers_
+
+    # Compute sizes for all clusters (including empty ones)
+    size_series = df["cluster"].value_counts().to_dict()
+    n_clusters = centroids.shape[0]
+    cluster_ids = list(range(n_clusters))
+    # Sort clusters by size descending
+    cluster_ids.sort(key=lambda x: size_series.get(x, 0), reverse=True)
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("Cluster Analysis Report\n")
+        f.write("=" * 80 + "\n\n")
+
+        for i in cluster_ids:
+            members = df[df["cluster"] == i]
+            n_members = len(members)
+
+            header = f"Cluster {i} ({n_members} items)"
+            f.write(header + "\n")
+            f.write("-" * len(header) + "\n")
+
+            top_idx = centroids[i].argsort()[::-1][:10]
+            top_terms = feature_names[top_idx]
+            f.write("Top Terms:\n")
+            f.write("  " + ", ".join(top_terms) + "\n\n")
+
+            f.write("Examples:\n")
+            if n_members == 0:
+                f.write("  (No members in this cluster)\n\n")
+            else:
+                samples = members[["video_title", "description", "tags_str"]].sample(
+                    min(sample_size, n_members), random_state=42
+                )
+                for _, row in samples.iterrows():
+                    title = row.video_title.strip() or "[No title]"
+                    desc = (
+                        (row.description.strip()[:100] + "...")
+                        if len(row.description.strip()) > 100
+                        else (row.description.strip() or "[No description]")
+                    )
+                    tags = row.tags_str.strip()[:30] or "[No tags]"
+
+                    wrapped_title = textwrap.fill(title, wrap_width)
+                    wrapped_desc = textwrap.fill(desc, wrap_width)
+                    wrapped_tags = textwrap.fill(tags, wrap_width)
+
+                    f.write(f"  • Title: {wrapped_title}\n")
+                    f.write(f"    Description: {wrapped_desc}\n")
+                    f.write(f"    Tags: {wrapped_tags}\n\n")
+
+            f.write("=" * 80 + "\n\n")
+
+    logger.info(f"✔ Cluster report saved to: {output_path}")
 
 
 def build_feature_matrix(
@@ -334,71 +398,11 @@ def make_clusters(
         plt.savefig(pca_path)
         logger.info(f"saved PCA plot → {pca_path}")
 
+        write_cluster_report(
+            df, features, best_km, output_path=str(out_dir_ts / "cluster_report.txt")
+        )
+
     return df, best_km, features  # type: ignore
-
-
-def write_cluster_report(
-    df: pd.DataFrame,
-    features: ColumnTransformer,
-    km: KMeans,
-    output_path: str,
-    sample_size: int = 5,
-    wrap_width: int = 80,
-) -> None:
-    feature_names = features.get_feature_names_out()
-    centroids = km.cluster_centers_
-
-    # Compute sizes for all clusters (including empty ones)
-    size_series = df["cluster"].value_counts().to_dict()
-    n_clusters = centroids.shape[0]
-    cluster_ids = list(range(n_clusters))
-    # Sort clusters by size descending
-    cluster_ids.sort(key=lambda x: size_series.get(x, 0), reverse=True)
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write("Cluster Analysis Report\n")
-        f.write("=" * 80 + "\n\n")
-
-        for i in cluster_ids:
-            members = df[df["cluster"] == i]
-            n_members = len(members)
-
-            header = f"Cluster {i} ({n_members} items)"
-            f.write(header + "\n")
-            f.write("-" * len(header) + "\n")
-
-            top_idx = centroids[i].argsort()[::-1][:10]
-            top_terms = feature_names[top_idx]
-            f.write("Top Terms:\n")
-            f.write("  " + ", ".join(top_terms) + "\n\n")
-
-            f.write("Examples:\n")
-            if n_members == 0:
-                f.write("  (No members in this cluster)\n\n")
-            else:
-                samples = members[["video_title", "description", "tags_str"]].sample(
-                    min(sample_size, n_members), random_state=42
-                )
-                for _, row in samples.iterrows():
-                    title = row.video_title.strip() or "[No title]"
-                    desc = (
-                        (row.description.strip()[:100] + "...")
-                        if len(row.description.strip()) > 100
-                        else (row.description.strip() or "[No description]")
-                    )
-                    tags = row.tags_str.strip()[:30] or "[No tags]"
-
-                    wrapped_title = textwrap.fill(title, wrap_width)
-                    wrapped_desc = textwrap.fill(desc, wrap_width)
-                    wrapped_tags = textwrap.fill(tags, wrap_width)
-
-                    f.write(f"  • Title: {wrapped_title}\n")
-                    f.write(f"    Description: {wrapped_desc}\n")
-                    f.write(f"    Tags: {wrapped_tags}\n\n")
-
-            f.write("=" * 80 + "\n\n")
-
-    logger.info(f"✔ Cluster report saved to: {output_path}")
 
 
 if __name__ == "__main__":
