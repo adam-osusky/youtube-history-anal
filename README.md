@@ -2,6 +2,9 @@
 
 A Python project to analyze your YouTube watch history. This tool parses your Google Takeout JSON history, enriches it with video metadata, clusters viewed videos by content features, and generates time-based animations of your watching patterns.
 
+A Google Slides deck showcasing the analysis of the output from this code on specific watch history is available [here](https://docs.google.com/presentation/d/10if2gbHop-XZjc4ybcOxa0aFSwHCO4A6WJV_aJkxMqg/edit?usp=sharing).
+
+
 ## Features
 
 * **Data Extraction & Enrichment**: Parse YouTube watch history JSON and enrich each entry with metadata (title, description, tags, category) using `yt-dlp`.
